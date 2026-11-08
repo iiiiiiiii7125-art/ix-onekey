@@ -4,27 +4,27 @@ HaloCloud IX 云联网「路由模式」一键组网脚本：在香港机上执�
 香港端 SNAT + 内地端策略路由 + 默认路由切换，并内置**双层自动守护**，
 双机重启后可自愈，不会像原版 `sdwan.sh --sbmode` 那样失效。
 
-## 一键指令（在香港机 root 执行，每条单独复制）
+## 一键指令（在香港机 root 执行，按步骤顺序排列，每条单独复制）
 
-安装：
-
-```bash
-bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode
-```
-
-先看计划（只读探测，不改任何东西）：
+第一步 · 先看计划（只读探测，不改任何东西）：
 
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --dry-run
 ```
 
-查看状态：
+第二步 · 正式安装：
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode
+```
+
+第三步 · 查看状态：
 
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --status
 ```
 
-卸载（恢复内地机原始默认路由，清两端配置）：
+第四步 · 卸载（恢复内地机原始默认路由，清两端配置）：
 
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-uninstall.sh)
