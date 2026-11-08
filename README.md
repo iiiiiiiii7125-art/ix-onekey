@@ -17,7 +17,9 @@ bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/ma
 
 已经装过原版（或装错了）的机器，先跑卸载脚本清干净再重装。卸载逻辑就是原版
 菜单里「清除香港端 SNAT 路由」+「清除内地端策略路由」两步的合体：恢复内地机
-原始默认路由、删两端的规则/恢复服务/看门狗，最后连记忆一起清掉：
+原始默认路由、删两端的规则/恢复服务/看门狗，最后连记忆一起清掉。内地机恢复
+后还会自检并尝试修复：校验网关可达、清空 conntrack、验 DNS 解析（坏了自动
+修），最后实测 TCP 出口——自检异常会在结尾明确报警，不会假报成功：
 
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/sdwan-uninstall.sh)

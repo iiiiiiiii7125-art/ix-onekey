@@ -13,6 +13,9 @@
 #           规则与表、qh_mark 标记、恢复服务、看门狗与定时任务、cloud-init 配置、
 #           DNS 恢复原备份、apt 自动升级状态恢复，最后删路由快照与状态文件
 #   两端完事后清除香港机记忆（/root/.kkix_config 与 /root/.kkix_state）
+# 恢复自检（据 2026-11-09 ECS1419 那套的实测教训补强）：内地机恢复后校验网关
+# 可达、清空 conntrack、验 DNS 解析（坏了先拉 systemd-resolved、再不行写静态
+# nameserver），最后实测 TCP 出口；自检异常会在结尾明确报警，不再假报成功。
 # 内地机 IP/用户/端口从 /root/.kkix_config 读；读不到或连不上时会在终端让你输入。
 # 密码在终端输入（不回显），与原版一致。
 # =============================================================================
@@ -184,6 +187,12 @@ elif [ -s ~/.last_default_route ]; then
 else
   echo "[remote] 无原始路由快照，默认路由保持现状，请人工确认"
 fi
+# 3.5) 网关校验 + 清空连接跟踪（路由大改后旧 conntrack 状态会让 TCP 卡死，实测教训）
+GW_IP=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}' | head -n1)
+if [ -n "$GW_IP" ]; then
+  if ping -c1 -W2 "$GW_IP" >/dev/null 2>&1; then echo "[remote] 网关 $GW_IP 可达"; else echo "[remote] 警告: 网关 $GW_IP ping 不通，请人工确认默认路由"; fi
+fi
+conntrack -F >/dev/null 2>&1
 # 4) DNS 恢复
 chattr -i /etc/resolv.conf 2>/dev/null
 if [ -f ~/.original_resolv.conf ]; then cp ~/.original_resolv.conf /etc/resolv.conf; rm -f ~/.original_resolv.conf;
@@ -196,6 +205,18 @@ if [ -f /etc/qh_systemd_resolved_state ]; then
   rm -f /etc/qh_systemd_resolved_state
 fi
 [ -f /etc/nsswitch.conf.qhbackup ] && cp /etc/nsswitch.conf.qhbackup /etc/nsswitch.conf && rm -f /etc/nsswitch.conf.qhbackup
+# 4.5) DNS 解析自检与修复（无备份可恢复时 resolv.conf 可能残留坏状态，实测教训）
+if ! getent hosts www.baidu.com >/dev/null 2>&1; then
+  echo "[remote] DNS 解析异常，尝试修复..."
+  systemctl enable --now systemd-resolved >/dev/null 2>&1
+  sleep 1
+  if ! getent hosts www.baidu.com >/dev/null 2>&1; then
+    chattr -i /etc/resolv.conf 2>/dev/null
+    [ -L /etc/resolv.conf ] && rm -f /etc/resolv.conf
+    printf 'nameserver 223.5.5.5\nnameserver 119.29.29.29\n' > /etc/resolv.conf
+  fi
+fi
+if getent hosts www.baidu.com >/dev/null 2>&1; then echo "[remote] DNS 解析正常"; else echo "[remote] DNS 仍异常，请人工检查 /etc/resolv.conf"; fi
 # 5) 服务/脚本/定时任务
 systemctl disable --now network-check.timer >/dev/null 2>&1
 systemctl disable qh-route-restore.service >/dev/null 2>&1
@@ -221,14 +242,29 @@ if [ -f /etc/qh_auto_upgrade_state ]; then
 fi
 # 8) 保存 iptables
 mkdir -p /etc/iptables && iptables-save > /etc/iptables/rules.v4 2>/dev/null
+# 9) 出口自检（TCP 实测，不让"卸载完成"掩盖公网异常，实测教训）
+EGRESS_IP=$(curl -s -m 6 https://ifconfig.me 2>/dev/null)
+if [ -n "$EGRESS_IP" ]; then
+  echo "[remote] 出口自检正常，当前出口 IP: $EGRESS_IP"
+  echo "REMOTE_TCP_OK"
+elif ping -c1 -W2 223.5.5.5 >/dev/null 2>&1; then
+  echo "[remote] 出口自检异常: ICMP 通但 TCP 不通，多为云厂商侧公网 IP 状态问题，请在控制台对本机关机再开机后再重装"
+  echo "REMOTE_TCP_BAD"
+else
+  echo "[remote] 出口自检异常: 公网不通，请人工检查默认路由与网关"
+  echo "REMOTE_TCP_BAD"
+fi
 echo "[remote] 内地机清理完成"
 RCLEAN
 )
-if ! printf '%s' "$REMOTE_CLEAN" | "${SSH_BASE[@]}" "$REMOTE_SUDO bash -s -- '$QH_IP' '$HK_LAN_IP'"; then
-  die "内地机远程清理执行失败：香港端已清理，内地机请检查后重跑本脚本" 1
-fi
+REMOTE_OUT=$(printf '%s' "$REMOTE_CLEAN" | "${SSH_BASE[@]}" "$REMOTE_SUDO bash -s -- '$QH_IP' '$HK_LAN_IP'") || die "内地机远程清理执行失败：香港端已清理，内地机请检查后重跑本脚本" 1
+printf '%s\n' "$REMOTE_OUT"
 
 # ---------------- 3. 清除记忆 ----------------
 rm -f "$CONFIG_FILE"
 rm -rf "$STATE_DIR"
-info "卸载完成：两端原版配置已清除、内地机默认路由已恢复、记忆已清空，现在可以重新安装"
+if grep -q "REMOTE_TCP_BAD" <<<"$REMOTE_OUT"; then
+  warn "卸载完成（两端配置已清除、记忆已清空），但内地机出口自检异常（见上方 [remote] 提示）：先按提示处理再重装"
+else
+  info "卸载完成：两端原版配置已清除、记忆已清空，内地机出口自检正常，现在可以重新安装"
+fi
