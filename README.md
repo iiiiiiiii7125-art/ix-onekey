@@ -13,6 +13,16 @@ bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/ma
 和官方命令唯一的区别就是下载地址换成了这个仓库。不加 `--sbmode` 直接运行，
 就是原版的交互菜单。
 
+## 填错 IP 了？清除记忆
+
+原版会把香港 IP、内地 IP、SSH 用户/端口存进 `/root/.kkix_config`，下次运行
+直接读它、不再问——填错一次就一直错。跑一次这个小脚本把记忆清掉（只清记忆
+文件，不动已经配好的路由和服务），再重新运行安装命令就会重新问：
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/sdwan-forget.sh)
+```
+
 ## 补丁内容（与原版 diff 仅 72 行，只动恢复机制）
 
 1. **内地恢复脚本等得久了**：开机先等内网口就绪（最长 60 秒），再等香港可达
