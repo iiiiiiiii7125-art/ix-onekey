@@ -10,7 +10,7 @@
 #           并摘掉香港机守护公钥（按公钥内容精确匹配）
 # 兼容：对原版 sdwan.sh 路由模式留下的同名文件/服务也会一并清理（尽力而为）。
 # 用法：
-#   KKIX_SSH_PASS='内地机root密码' bash ix-uninstall.sh --qh-ip <内地机内网IP>
+#   bash ix-uninstall.sh --qh-ip <内地机内网IP>   # 运行时会提示输入内地机密码（不回显、不落盘）
 #   bash ix-uninstall.sh --ssh-key /root/.ssh/id_ed25519   # 或已有 /root/.kkix_config 时可省略参数
 # 说明：/etc/iproute2/rt_tables 里的 ix_return/internal_out 登记行无害，保留不删。
 # =============================================================================
@@ -70,6 +70,17 @@ elif [[ -n "${KKIX_SSH_PASS:-}" ]]; then
   SSH_BASE=(sshpass -e ssh "${SSH_OPTS[@]}" -o PreferredAuthentications=password "${SSH_USER}@${QH_IP}")
 elif [[ -f /root/.ssh/kkix_guard ]]; then
   SSH_BASE=(ssh "${SSH_OPTS[@]}" -o BatchMode=yes -i /root/.ssh/kkix_guard "${SSH_USER}@${QH_IP}")
+elif [[ -r /dev/tty ]] && ( : >/dev/tty ) 2>/dev/null; then
+  # 交互输入密码：不回显、不落盘，只输一次
+  printf '请输入内地机 %s@%s 的登录密码（输入不回显）: ' "$SSH_USER" "$QH_IP" > /dev/tty
+  IFS= read -r -s KKIX_RUNTIME_PW < /dev/tty && printf '\n' > /dev/tty || KKIX_RUNTIME_PW=""
+  if [[ -n "${KKIX_RUNTIME_PW:-}" ]]; then
+    command -v sshpass >/dev/null 2>&1 || die "密码方式需要 sshpass（apt-get install -y sshpass）" 1
+    export SSHPASS="$KKIX_RUNTIME_PW"
+    SSH_BASE=(sshpass -e ssh "${SSH_OPTS[@]}" -o PreferredAuthentications=password "${SSH_USER}@${QH_IP}")
+  else
+    SSH_BASE=(ssh "${SSH_OPTS[@]}" -o BatchMode=yes "${SSH_USER}@${QH_IP}")
+  fi
 else
   SSH_BASE=(ssh "${SSH_OPTS[@]}" -o BatchMode=yes "${SSH_USER}@${QH_IP}")
 fi

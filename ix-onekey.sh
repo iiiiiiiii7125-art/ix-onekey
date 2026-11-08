@@ -33,7 +33,7 @@
 #      原版菜单的「取消」仍可清理本版的配置，反之亦然。
 #
 # 用法示例（在香港节点以 root 运行）：
-#   KKIX_SSH_PASS='******' ./ix-onekey.sh --sbmode --qh-ip 192.168.80.20
+#   ./ix-onekey.sh --sbmode --qh-ip 192.168.80.20     # 运行时会提示输入前海端密码（不回显）
 #   ./ix-onekey.sh --qh-ip 192.168.80.20 --ssh-key /root/.ssh/id_ed25519
 #   ./ix-onekey.sh --config /root/kkix.env --dry-run     # 只探测+打印计划
 #   ./ix-onekey.sh --config /root/kkix.env --status      # 查看两端状态
@@ -97,7 +97,9 @@ usage() {
   --ssh-user USER       前海端 SSH 用户（默认 root）
   --ssh-port PORT       前海端 SSH 端口（默认 22）
   --ssh-key FILE        私钥文件（推荐）
-  --ssh-pass-env NAME   存放 SSH 密码的环境变量名（默认 KKIX_SSH_PASS，配合 sshpass）
+  --ssh-pass-env NAME   存放 SSH 密码的环境变量名（默认 KKIX_SSH_PASS，仅自动化场景用）
+                        未提供密钥/密码时，运行时会在终端提示输入前海端密码：
+                        不回显、只输一次、全程复用、不落盘
 
 接口参数（默认按「公网IP=外网口 / 私网IP=内网口」自动探测，可显式指定）:
   --hk-ext-if IF --hk-int-if IF --qh-ext-if IF --qh-int-if IF
@@ -215,7 +217,7 @@ require_root() { [[ $(id -u) -eq 0 ]] || die "请以 root 身份执行" 3; }
 require_local_cmds() {
   local missing=() c
   for c in ip ping curl ssh; do command -v "$c" >/dev/null 2>&1 || missing+=("$c"); done
-  if [[ -n "${SSH_PASS_SET:-}" ]] && ! command -v sshpass >/dev/null 2>&1; then missing+=("sshpass"); fi
+  if [[ -z "$SSH_KEY" ]] && ! command -v sshpass >/dev/null 2>&1; then missing+=("sshpass"); fi
   ((${#missing[@]}==0)) && return 0
   if command -v apt-get >/dev/null 2>&1 && [[ "$MODE" == "apply" ]]; then
     info "自动安装缺失命令: ${missing[*]}"
@@ -270,6 +272,18 @@ pick_local_ifaces() {
 
 # ----------------------------- SSH（前海端） ---------------------------------
 SSH_PASS_SET=""
+RUNTIME_SSH_PASS=""
+# 交互输入密码：从 /dev/tty 读（curl 管道执行时 stdin 不是终端也能问），不回显、不落盘
+prompt_ssh_password() {
+  [[ -r /dev/tty ]] && ( : >/dev/tty ) 2>/dev/null || return 1
+  local pw=""
+  printf '请输入前海端 %s@%s 的登录密码（输入不回显）: ' "$SSH_USER" "$QH_IP" > /dev/tty
+  IFS= read -r -s pw < /dev/tty || return 1
+  printf '\n' > /dev/tty
+  [[ -n "$pw" ]] || return 1
+  RUNTIME_SSH_PASS="$pw"
+  return 0
+}
 setup_ssh() {
   [[ -n "${!SSH_PASS_ENV:-}" ]] && SSH_PASS_SET=1
   local -a opts=(-o StrictHostKeyChecking=accept-new
@@ -288,6 +302,11 @@ setup_ssh() {
     SSH_BASE=(sshpass -e ssh "${opts[@]}" -o BatchMode=no -o PubkeyAuthentication=no
               -o PreferredAuthentications=password "${SSH_USER}@${QH_IP}")
     export SSHPASS="${!SSH_PASS_ENV}"
+  elif prompt_ssh_password; then
+    command -v sshpass >/dev/null 2>&1 || die "密码认证需要 sshpass" 3
+    SSH_BASE=(sshpass -e ssh "${opts[@]}" -o BatchMode=no -o PubkeyAuthentication=no
+              -o PreferredAuthentications=password "${SSH_USER}@${QH_IP}")
+    export SSHPASS="$RUNTIME_SSH_PASS"
   else
     # 默认密钥/agent：BatchMode 保证不会卡在密码提示上
     SSH_BASE=(ssh "${opts[@]}" -o BatchMode=yes "${SSH_USER}@${QH_IP}")

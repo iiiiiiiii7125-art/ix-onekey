@@ -4,6 +4,29 @@ HaloCloud IX 云联网「路由模式」一键组网脚本：在香港机上执�
 香港端 SNAT + 内地端策略路由 + 默认路由切换，并内置**双层自动守护**，
 双机重启后可自愈，不会像原版 `sdwan.sh --sbmode` 那样失效。
 
+## 一键指令（在香港机 root 执行，复制即用）
+
+```bash
+# ① 先看计划（只读探测，不改任何东西）
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --qh-ip <内地机内网IP> --dry-run
+
+# ② 正式安装
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --qh-ip <内地机内网IP>
+
+# ③ 查看状态
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --qh-ip <内地机内网IP> --status
+
+# ④ 一键卸载（恢复内地机原始默认路由，清两端配置）
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-uninstall.sh) --qh-ip <内地机内网IP>
+```
+
+备注：
+
+- 全程只在**香港机**执行，内地机只需要 SSH 开着、root 能登录（密码或密钥均可，密钥用 `--ssh-key /root/.ssh/id_ed25519` 代替密码环境变量）
+- `<内地机内网IP>` 填和香港机同内网的那台内地机 IP；脚本通用、零硬编码，其他组网换个 IP 就能用
+- 装完建议双机同时重启一次验收：等 3~5 分钟，内地机 `curl -s https://ipinfo.io/ip` 应为香港公网 IP，且公网 SSH 能连回内地机
+- 密码在运行时由你亲自在终端输入（不回显、只输一次、全程复用、不落盘），脚本本身不含任何真实 IP 或凭据
+
 ## 为什么不用原版
 
 原版 `bash <(curl -sL https://filecdn.astroqore.org/haloix/sdwan.sh) --sbmode` 在真实双机上暴露的问题：
@@ -15,7 +38,7 @@ HaloCloud IX 云联网「路由模式」一键组网脚本：在香港机上执�
 
 ## 本脚本的设计
 
-- **真免交互**：参数走命令行 / `KKIX_*` 环境变量 / 配置文件，密码走 `KKIX_SSH_PASS` + `sshpass -e`，不落盘
+- **参数免交互、密码亲自输**：参数走命令行 / 配置文件；内地机密码运行时在终端提示输入（不回显、输一次全程复用、不落盘），不用把密码写进命令或环境变量
 - **网关绝不猜**：只用改动前的真实默认路由或原始路由快照，取不到就停
 - **网卡用 `ip route get` 锚定**，不用启发式优先级
 - **切默认路由前武装死人开关**（默认 180s）：控制器用新 SSH 验出口通过才解除，切错自动回滚
@@ -28,10 +51,10 @@ HaloCloud IX 云联网「路由模式」一键组网脚本：在香港机上执�
 
 ```bash
 # 先看计划（只读探测，不改任何东西）
-KKIX_SSH_PASS='内地机root密码' bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --qh-ip <内地机内网IP> --dry-run
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --qh-ip <内地机内网IP> --dry-run
 
 # 正式安装
-KKIX_SSH_PASS='内地机root密码' bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --qh-ip <内地机内网IP>
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --qh-ip <内地机内网IP>
 ```
 
 也可用密钥：`bash ix-onekey.sh --qh-ip <IP> --ssh-key /root/.ssh/id_ed25519`
@@ -41,7 +64,7 @@ KKIX_SSH_PASS='内地机root密码' bash <(curl -sL https://raw.githubuserconten
 ## 卸载
 
 ```bash
-KKIX_SSH_PASS='内地机root密码' bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-uninstall.sh) --qh-ip <内地机内网IP>
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-uninstall.sh) --qh-ip <内地机内网IP>
 ```
 
 卸载会先把内地机默认路由恢复到安装前快照，再清理两端的表、服务、看门狗、守护与状态文件。
