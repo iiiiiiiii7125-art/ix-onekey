@@ -10,7 +10,8 @@
 #           并摘掉香港机守护公钥（按公钥内容精确匹配）
 # 兼容：对原版 sdwan.sh 路由模式留下的同名文件/服务也会一并清理（尽力而为）。
 # 用法：
-#   bash ix-uninstall.sh --qh-ip <内地机内网IP>   # 运行时会提示输入内地机密码（不回显、不落盘）
+#   bash ix-uninstall.sh                          # 内地机 IP 自动识别，密码运行时输入（不回显、不落盘）
+#   bash ix-uninstall.sh --qh-ip <内地机内网IP>   # 也可显式指定 IP
 #   bash ix-uninstall.sh --ssh-key /root/.ssh/id_ed25519   # 或已有 /root/.kkix_config 时可省略参数
 # 说明：/etc/iproute2/rt_tables 里的 ix_return/internal_out 登记行无害，保留不删。
 # =============================================================================
@@ -53,6 +54,26 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 [[ $(id -u) -eq 0 ]] || die "请以 root 执行" 1
+# 内地机 IP 自动识别：配置没有时，扫已知邻居里开放 SSH 的主机（与安装脚本同一逻辑）
+if [[ -z "$QH_IP" ]]; then
+  _probe_one() {
+    local banner=""
+    banner=$(timeout 3 bash -c 'exec 3<>/dev/tcp/$1/$2 2>/dev/null; IFS= read -r -t 2 line <&3; printf %s "$line"' _ "$1" "$2" 2>/dev/null) || banner=""
+    [[ "$banner" == SSH-* ]] && printf '%s\n' "$1" >> "$3"
+    return 0
+  }
+  export -f _probe_one
+  _tmp=$(mktemp)
+  ip neigh show 2>/dev/null | awk '{print $1}' | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' | sort -u \
+    | xargs -P 32 -I{} bash -c '_probe_one "$@"' _ {} "$SSH_PORT" "$_tmp" || true
+  mapfile -t _cands < <(sort -u "$_tmp"); rm -f "$_tmp"
+  if (( ${#_cands[@]} == 1 )); then
+    QH_IP="${_cands[0]}"; info "自动识别到内地机: $QH_IP"
+  elif [[ -r /dev/tty ]] && ( : >/dev/tty ) 2>/dev/null; then
+    printf '请输入内地机局域网 IP: ' > /dev/tty
+    IFS= read -r QH_IP < /dev/tty || QH_IP=""
+  fi
+fi
 [[ -n "$QH_IP" ]] || die "缺少内地机 IP：--qh-ip 或配置文件 QIANHAI_LAN_IP" 2
 
 # ---------- 准备 SSH（优先守护密钥，其次 --ssh-key / 密码 / 默认密钥） ----------

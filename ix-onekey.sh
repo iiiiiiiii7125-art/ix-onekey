@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# ix-onekey.sh — HaloCloud IX 组网「路由模式」一键脚本（免交互 + 双层自动守护）
+# ix-onekey.sh — HaloCloud IX 组网「路由模式」一键脚本（IP 自动识别 + 密码交互输入 + 双层自动守护）
 #
 # v3.0 设计（吸取原版在真实双机上的全部教训）：
 #   - 网关绝不猜测：两端外网网关只取「改动前真实默认路由」或对端保存的原始
@@ -20,8 +20,10 @@
 #   后连前海端，失败不回滚；默认路由一切错就断联，没有看门狗。
 #
 # 本版原则：
-#   1. 真·零交互：全程无 read。参数只来自命令行 / 环境变量 / 配置文件，
-#      缺参数或检测不确定 -> 在「任何修改发生之前」报错退出（退出码 3）。
+#   1. 与原版一致的人机分工：IP 类信息一律自动识别（香港端 IP 探测、对端 IP
+#      先读已保存配置、没有就扫内网段按 SSH banner 识别，多台时终端编号选）；
+#      密码由用户在终端交互输入（不回显、只输一次）。其余参数来自命令行 /
+#      环境变量 / 配置文件；检测不确定 -> 在「任何修改发生之前」报错退出（退出码 3）。
 #   2. 先体检后动刀：preflight 只读探测（本机 + 一次 SSH 批量探测前海端），
 #      打印最终计划，校验接口/IP/网段/网关/SSH/sudo，全部通过才开始改。
 #   3. 切默认路由前先武装「死人开关」：N 秒内控制器没确认成功，前海端自动
@@ -33,7 +35,7 @@
 #      原版菜单的「取消」仍可清理本版的配置，反之亦然。
 #
 # 用法示例（在香港节点以 root 运行）：
-#   ./ix-onekey.sh --sbmode --qh-ip 192.168.80.20     # 运行时会提示输入前海端密码（不回显）
+#   ./ix-onekey.sh --sbmode                            # 对端 IP 自动识别，密码运行时输入（不回显）
 #   ./ix-onekey.sh --qh-ip 192.168.80.20 --ssh-key /root/.ssh/id_ed25519
 #   ./ix-onekey.sh --config /root/kkix.env --dry-run     # 只探测+打印计划
 #   ./ix-onekey.sh --config /root/kkix.env --status      # 查看两端状态
@@ -43,7 +45,7 @@ set -euo pipefail
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 
-SCRIPT_VERSION="3.0.0-onekey"
+SCRIPT_VERSION="3.1.0-onekey"
 STATE_DIR="/root/.kkix_state"
 CONFIG_FILE_DEFAULT="/root/.kkix_config"
 BACKUP_DIR=""                       # apply 时生成: $STATE_DIR/backup-<ts>
@@ -91,8 +93,8 @@ usage() {
   cat <<'EOF'
 用法: ix-onekey.sh --sbmode [选项]        # 在香港节点 root 下运行
 
-连接参数（缺失且无法自动探测时，修改前报错退出，绝不弹问）:
-  --qh-ip IP            前海端局域网 IP（必填，或配置文件 QH_IP / 环境 KKIX_QH_IP）
+连接参数（IP 自动识别，密码运行时在终端输入）:
+  --qh-ip IP            前海端局域网 IP（可省略：先读 /root/.kkix_config，再自动扫描内网识别）
   --hk-lan-ip IP        香港端内网 IP（默认: 自动探测内网网卡地址）
   --ssh-user USER       前海端 SSH 用户（默认 root）
   --ssh-port PORT       前海端 SSH 端口（默认 22）
@@ -133,7 +135,7 @@ load_config_file() {
     key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
     val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
     case "$key" in
-      QH_IP)        [[ -z "$QH_IP" ]]        && QH_IP="$val" ;;
+      QH_IP|QIANHAI_LAN_IP) [[ -z "$QH_IP" ]] && QH_IP="$val" ;;
       HK_LAN_IP)    [[ -z "$HK_LAN_IP" ]]    && HK_LAN_IP="$val" ;;
       SSH_USER|REMOTE_USER) SSH_USER="$val" ;;
       SSH_PORT|REMOTE_PORT) SSH_PORT="$val" ;;
@@ -399,14 +401,76 @@ pick_remote_ifaces_and_gw() {
 }
 
 # ----------------------------- Preflight ------------------------------------
+# ----------------------------- 前海 IP 自动识别 ------------------------------
+_ip2int() { local IFS=. a b c d; read -r a b c d <<<"$1"; echo $(( (a<<24) + (b<<16) + (c<<8) + d )); }
+_int2ip() { local n="$1"; printf '%d.%d.%d.%d\n' $(( (n>>24)&255 )) $(( (n>>16)&255 )) $(( (n>>8)&255 )) $(( n&255 )); }
+# 探一个 IP 的 SSH 端口并核对 banner（SSH-* 才算），命中写进结果文件；供 xargs 并行调用
+_ssh_banner_probe() {
+  local banner=""
+  banner=$(timeout 3 bash -c 'exec 3<>/dev/tcp/$1/$2 2>/dev/null; IFS= read -r -t 2 line <&3; printf %s "$line"' _ "$1" "$2" 2>/dev/null) || banner=""
+  [[ "$banner" == SSH-* ]] && printf '%s\n' "$1" >> "$3"
+  return 0
+}
+export -f _ssh_banner_probe
+# 候选 = 内网段里开放 SSH 且 banner 正确的主机（已知邻居与全段扫描合并去重，排除本机）
+discover_qh_candidates() {
+  local tmp; tmp=$(mktemp)
+  local -a hosts=() uniq=()
+  local -A seen=() own=()
+  local ip cidr bits ip_int mask net_int count i
+  while read -r ip; do is_ipv4 "$ip" && hosts+=("$ip"); done < <(ip neigh show dev "$HK_INT_IF" 2>/dev/null | awk '{print $1}')
+  cidr="$HK_INT_CIDR"; bits="${cidr##*/}"
+  ip_int=$(_ip2int "${cidr%/*}")
+  mask=$(( bits==0 ? 0 : (4294967295 << (32-bits)) & 4294967295 ))
+  net_int=$(( ip_int & mask ))
+  count=$(( 1 << (32-bits) ))
+  if (( count > 2050 )); then warn "内网段 $cidr 主机数过大，扫描只覆盖前 2048 台"; count=2050; fi
+  for (( i=1; i<count-1; i++ )); do hosts+=("$(_int2ip $(( net_int + i )) )"); done
+  for ip in "${LIF_IP4[@]}"; do own["${ip%/*}"]=1; done
+  for ip in "${hosts[@]}"; do [[ -n "${own[$ip]:-}" || -n "${seen[$ip]:-}" ]] && continue; seen[$ip]=1; uniq+=("$ip"); done
+  if ((${#uniq[@]})); then
+    printf '%s\n' "${uniq[@]}" | xargs -P 48 -I{} bash -c '_ssh_banner_probe "$@"' _ {} "$SSH_PORT" "$tmp" || true
+  fi
+  sort -u "$tmp" 2>/dev/null
+  rm -f "$tmp"
+}
+resolve_qh_ip() {
+  [[ -n "$QH_IP" ]] && return 0
+  info "未提供前海 IP，自动识别中（扫描内网段 $HK_INT_NET 找 SSH 服务）..."
+  local -a cands=()
+  mapfile -t cands < <(discover_qh_candidates)
+  if (( ${#cands[@]} == 1 )); then
+    QH_IP="${cands[0]}"; info "自动识别到前海端: $QH_IP"; return 0
+  fi
+  if (( ${#cands[@]} > 1 )); then
+    if [[ -r /dev/tty ]] && ( : >/dev/tty ) 2>/dev/null; then
+      local i sel=""
+      { echo "内网段里找到多台开 SSH 的主机，请选择前海端："
+        for i in "${!cands[@]}"; do echo "  $((i+1))) ${cands[$i]}"; done; } > /dev/tty
+      printf '输入序号: ' > /dev/tty
+      IFS= read -r sel < /dev/tty || sel=""
+      if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel>=1 && sel<=${#cands[@]} )); then
+        QH_IP="${cands[$((sel-1))]}"; info "已选择前海端: $QH_IP"; return 0
+      fi
+      die "序号无效: $sel" 2
+    fi
+    die "自动识别到多台 SSH 主机（${cands[*]}），非交互环境无法选择，请用 --qh-ip 指定" 3
+  fi
+  if [[ -r /dev/tty ]] && ( : >/dev/tty ) 2>/dev/null; then
+    local typed=""
+    printf '未自动识别到前海端，请输入前海端局域网 IP: ' > /dev/tty
+    IFS= read -r typed < /dev/tty || typed=""
+    if is_ipv4 "$typed"; then QH_IP="$typed"; return 0; fi
+    die "输入的 IP 不合法: $typed" 2
+  fi
+  die "自动识别失败：在 $HK_INT_NET 未找到开放 SSH 的主机；请确认前海端已开机且与香港在同一云联网，或用 --qh-ip 指定" 3
+}
+
 preflight() {
   require_root
-  [[ -n "$QH_IP" ]] || die "缺少前海端 IP：请用 --qh-ip / 配置文件 QH_IP / 环境 KKIX_QH_IP 提供（本脚本不会弹窗询问）" 3
-  is_ipv4 "$QH_IP" || die "前海端 IP 不是合法 IPv4: $QH_IP" 3
   [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && (( SSH_PORT>=1 && SSH_PORT<=65535 )) || die "SSH 端口非法: $SSH_PORT" 3
   [[ "$DEADMAN_SECONDS" =~ ^[0-9]+$ ]] && (( DEADMAN_SECONDS>=30 )) || die "--deadman-seconds 至少 30" 2
 
-  setup_ssh
   require_local_cmds
 
   info "探测香港端网络..."
@@ -416,6 +480,9 @@ preflight() {
   HK_EXT_CIDR="${LIF_IP4[$HK_EXT_IF]}"; HK_EXT_IP="${HK_EXT_CIDR%/*}"
   HK_INT_CIDR="${LIF_IP4[$HK_INT_IF]}"; HK_INT_IP="${HK_INT_CIDR%/*}"
   HK_INT_NET=$(cidr_network "$HK_INT_CIDR")
+  resolve_qh_ip
+  is_ipv4 "$QH_IP" || die "前海端 IP 不是合法 IPv4: $QH_IP" 3
+  setup_ssh
   # v3: 内网口以「实际去对端的路由」为准（route get 的 dev/src），启发式选错时纠正
   local rget rdev rsrc
   rget=$(ip route get "$QH_IP" 2>/dev/null | head -n1)
@@ -437,7 +504,7 @@ preflight() {
   ping -c 2 -W 2 "$QH_IP" >/dev/null 2>&1 || die "香港端 ping 不通前海 $QH_IP，先检查云联网连通性" 3
 
   info "探测前海端（单次 SSH 批量探测）..."
-  remote_probe || die "SSH 连接前海端 ${SSH_USER}@${QH_IP}:${SSH_PORT} 失败：检查地址/凭据/端口（BatchMode 下不会弹密码框）" 3
+  remote_probe || die "SSH 连接前海端 ${SSH_USER}@${QH_IP}:${SSH_PORT} 失败：检查地址/端口，或密码是否输对" 3
   pick_remote_ifaces_and_gw
   [[ -n "$QH_EXT_IP" ]] || die "前海端外网口无法确定/无 IPv4（--qh-ext-if 显式指定）" 3
   [[ -n "$QH_INT_IP" ]] || die "前海端内网口无法确定/无 IPv4（--qh-int-if 显式指定）" 3
@@ -962,13 +1029,19 @@ main() {
   [[ -n "$CONFIG_FILE" ]] && load_config_file "$CONFIG_FILE"
   [[ -z "$CONFIG_FILE" && -f "$CONFIG_FILE_DEFAULT" ]] && load_config_file "$CONFIG_FILE_DEFAULT"
   case "$MODE" in
-    status)   [[ -n "$QH_IP" ]] || die "status 需要 --qh-ip 或配置中的 QH_IP" 2; do_status ;;
+    status)
+      if [[ -z "$QH_IP" ]]; then
+        require_root; local_probe; pick_local_ifaces
+        HK_INT_CIDR="${LIF_IP4[$HK_INT_IF]:-}"; HK_INT_NET=$(cidr_network "${HK_INT_CIDR:-0.0.0.0/24}")
+        resolve_qh_ip
+      fi
+      do_status ;;
     rollback)
       # 回滚需要接口信息来删本机规则：做轻量本机探测（不要求 SSH 先行成功）
       require_root; local_probe; pick_local_ifaces
       HK_EXT_CIDR="${LIF_IP4[$HK_EXT_IF]:-}"; HK_EXT_IP="${HK_EXT_CIDR%/*}"
       HK_INT_CIDR="${LIF_IP4[$HK_INT_IF]:-}"; HK_INT_NET=$(cidr_network "${HK_INT_CIDR:-0.0.0.0/24}")
-      [[ -n "$QH_IP" ]] || die "rollback 需要 --qh-ip 或配置中的 QH_IP" 2
+      resolve_qh_ip
       do_rollback ;;
     dry-run)  preflight; info "dry-run 结束：未做任何修改" ;;
     apply)
