@@ -1,100 +1,37 @@
-# ix-onekey
+# sdwan.sh — HaloIX 路由模式（原版 + 重启自动恢复补丁）
 
-HaloCloud IX 云联网「路由模式」一键组网脚本：在香港机上执行一次，自动完成
-香港端 SNAT + 内地端策略路由 + 默认路由切换，并内置**双层自动守护**，
-双机重启后可自愈，不会像原版 `sdwan.sh --sbmode` 那样失效。
+这就是原版 AstroQore `sdwan.sh`（beta-flag-2024-10）的源码，**设计、菜单、交互、
+配置格式全部与原版一模一样**，只在「重启自动恢复」上打了补丁。
+原版其他行为（自己装依赖、读 `/root/.kkix_config`、该问的问、该默认的默认）一概没动。
 
-## 一键指令（在香港机 root 执行，按步骤顺序排列，每条单独复制）
-
-第一步 · 先看计划（只读探测，不改任何东西）：
+## 一键指令（在香港机 root 执行）
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --dry-run
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/sdwan.sh) --sbmode
 ```
 
-第二步 · 正式安装：
+和官方命令唯一的区别就是下载地址换成了这个仓库。不加 `--sbmode` 直接运行，
+就是原版的交互菜单。
+
+## 补丁内容（与原版 diff 仅 72 行，只动恢复机制）
+
+1. **内地恢复脚本等得久了**：开机先等内网口就绪（最长 60 秒），再等香港可达
+   最长 120 秒才决定默认路由——原版只 ping 一次，双机同时重启时香港稍慢就误判。
+2. **看门狗会切回了**：香港恢复可达后，每 5 分钟的网络检查会自动把默认路由
+   切回香港——原版只会切走、不会切回，切走一次就永久失效。
+3. **恢复用的外网网关读真实快照**：恢复脚本和看门狗里原来烘焙的网关可能被
+   推测错（例如把 165.101.144.1 写成 165.101.145.1，打断公网回程）；现在优先
+   读安装时保存的原始路由快照 `~/.true_original_default_route` 里的真实网关。
+4. **香港恢复脚本等网卡就绪**：内外网口都拿到 IPv4 地址（最长 60 秒）再执行。
+5. **修了原版一个真 bug**：原版生成的香港恢复脚本里有一段空 `if`（then 后面
+   没有语句），导致那个脚本语法错误、开机从来没真正运行过——已删除该空块。
+
+## 验收（装完故意双机重启一次）
+
+等 3~5 分钟，在内地机验证：
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode
+curl -s https://ipinfo.io/ip
 ```
 
-第三步 · 查看状态：
-
-```bash
-bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --status
-```
-
-第四步 · 卸载（恢复内地机原始默认路由，清两端配置）：
-
-```bash
-bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-uninstall.sh)
-```
-
-备注：
-
-- 全程只在**香港机**执行，内地机只需要 SSH 开着、root 能登录（密码运行时输，或用密钥 `--ssh-key /root/.ssh/id_ed25519`）
-- **内地机 IP 不用填**：脚本先读原版留下的 `/root/.kkix_config`，没有就自动扫描内网段、按 SSH 特征识别对端（扫到多台会在终端让你输序号选）；脚本通用、零硬编码，其他组网直接用
-- 装完建议双机同时重启一次验收：等 3~5 分钟，内地机 `curl -s https://ipinfo.io/ip` 应为香港公网 IP，且公网 SSH 能连回内地机
-- 密码在运行时由你亲自在终端输入（不回显、只输一次、全程复用、不落盘），脚本本身不含任何真实 IP 或凭据
-
-## 为什么不用原版
-
-原版 `bash <(curl -sL https://filecdn.astroqore.org/haloix/sdwan.sh) --sbmode` 在真实双机上暴露的问题：
-
-- 号称免交互，SSH 用户/端口/认证/密码仍要逐个回答（`ensure_remote_context` 没有 sbmode 分支）
-- 外网网关取不到时按 `x.x.x.1` **猜**，猜错还写死进恢复脚本，导致每次恢复后内地机公网回程（SSH）被打断
-- 开机恢复只 `sleep 10` + 只 ping 一次香港：双机同时重启时香港稍慢，内地机就回退默认路由且**永不切回**
-- nft 用 `iif/oif`、整表覆盖 `/etc/nftables.conf`、全局 `FORWARD DROP`、`chattr +i` 锁 DNS 等副作用
-
-## 本脚本的设计
-
-- **IP 自动识别、密码亲自输**：和原版一样的分工——香港端 IP 自动探测，对端 IP 先读已存配置、没有就扫内网按 SSH banner 识别；内地机密码运行时在终端提示输入（不回显、输一次全程复用、不落盘），不用把 IP 或密码写进命令
-- **网关绝不猜**：只用改动前的真实默认路由或原始路由快照，取不到就停
-- **网卡用 `ip route get` 锚定**，不用启发式优先级
-- **切默认路由前武装死人开关**（默认 180s）：控制器用新 SSH 验出口通过才解除，切错自动回滚
-- **重启三层自愈**：开机恢复等网卡/等香港可达（≤120s）→ 内地机看门狗每 2 分钟全量收敛（默认路由 + ix_return + 标记表）→ 香港机守护定时器本机自检 + SSH 远程纠偏
-- nft 一律 `iifname/oifname`；只动自有表与 `sysctl.d` 文件；不锁 DNS
-
-## 安装（在香港机 root 执行）
-
-前置：内地机 SSH 已开启、root 可登录即可，IP 会自动识别。
-
-先看计划（只读探测，不改任何东西）：
-
-```bash
-bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --dry-run
-```
-
-正式安装：
-
-```bash
-bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode
-```
-
-也可用密钥：`bash ix-onekey.sh --ssh-key /root/.ssh/id_ed25519`
-
-状态查看：`bash ix-onekey.sh --status`（IP 同样自动识别，密码运行时输）
-
-## 卸载
-
-```bash
-bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-uninstall.sh)
-```
-
-卸载会先把内地机默认路由恢复到安装前快照，再清理两端的表、服务、看门狗、守护与状态文件。
-
-## 验收建议
-
-装完后故意双机同时重启一次，等 3~5 分钟，在内地机验证：
-
-```bash
-curl -s https://ipinfo.io/ip   # 应为香港机公网 IP
-ip route show default          # 应为 via <香港内网IP>
-```
-
-再从公网 SSH 连一次内地机，能连即全部通过。
-
-## 文件
-
-- `ix-onekey.sh` — 一键安装/状态/回滚（`--dry-run` / `--status` / `--rollback`）
-- `ix-uninstall.sh` — 独立卸载脚本
+应为香港机公网 IP；再从公网 SSH 连一次内地机，能连即全部通过。
