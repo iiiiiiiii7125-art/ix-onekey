@@ -4,19 +4,29 @@ HaloCloud IX 云联网「路由模式」一键组网脚本：在香港机上执�
 香港端 SNAT + 内地端策略路由 + 默认路由切换，并内置**双层自动守护**，
 双机重启后可自愈，不会像原版 `sdwan.sh --sbmode` 那样失效。
 
-## 一键指令（在香港机 root 执行，复制即用）
+## 一键指令（在香港机 root 执行，每条单独复制）
+
+安装：
 
 ```bash
-# ① 先看计划（只读探测，不改任何东西）
-bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --dry-run
-
-# ② 正式安装
 bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode
+```
 
-# ③ 查看状态
+先看计划（只读探测，不改任何东西）：
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --dry-run
+```
+
+查看状态：
+
+```bash
 bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --status
+```
 
-# ④ 一键卸载（恢复内地机原始默认路由，清两端配置）
+卸载（恢复内地机原始默认路由，清两端配置）：
+
+```bash
 bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-uninstall.sh)
 ```
 
@@ -49,11 +59,15 @@ bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/ma
 
 前置：内地机 SSH 已开启、root 可登录即可，IP 会自动识别。
 
-```bash
-# 先看计划（只读探测，不改任何东西）
-bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --dry-run
+先看计划（只读探测，不改任何东西）：
 
-# 正式安装
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode --dry-run
+```
+
+正式安装：
+
+```bash
 bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/ix-onekey.sh) --sbmode
 ```
 
