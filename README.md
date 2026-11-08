@@ -13,6 +13,18 @@ bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/ma
 和官方命令唯一的区别就是下载地址换成了这个仓库。不加 `--sbmode` 直接运行，
 就是原版的交互菜单。
 
+## 之前装错了？先卸载再重装
+
+已经装过原版（或装错了）的机器，先跑卸载脚本清干净再重装。卸载逻辑就是原版
+菜单里「清除香港端 SNAT 路由」+「清除内地端策略路由」两步的合体：恢复内地机
+原始默认路由、删两端的规则/恢复服务/看门狗，最后连记忆一起清掉：
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/iiiiiiiii7125-art/ix-onekey/main/sdwan-uninstall.sh)
+```
+
+卸完再跑上面的安装命令，就是全新安装。
+
 ## 填错 IP 了？清除记忆
 
 原版会把香港 IP、内地 IP、SSH 用户/端口存进 `/root/.kkix_config`，下次运行
